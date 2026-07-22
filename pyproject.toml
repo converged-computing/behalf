@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "behalf"
+version = "0.1.0"
+description = "A small framework for scoped agents: a brief, a typed toolset (read/action), a pluggable model backend."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+# The core is dependency-free. Pick a backend extra to actually run an agent.
+dependencies = []
+
+[project.optional-dependencies]
+claude = ["claude-agent-sdk>=0.2"]
+gemini = ["google-adk>=1.0"]
+aws    = ["strands-agents>=0.1", "boto3>=1.34"]
+all    = ["claude-agent-sdk>=0.2", "google-adk>=1.0", "strands-agents>=0.1", "boto3>=1.34"]
+dev    = ["pytest>=8"]
+
+[tool.setuptools.packages.find]
+include = ["behalf*"]
