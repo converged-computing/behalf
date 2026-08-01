@@ -1,5 +1,7 @@
 # behalf
 
+[![DOI](https://zenodo.org/badge/1309288270.svg)](https://doi.org/10.5281/zenodo.21745822)
+
 A small framework for the recurring pattern of a **scoped agent**: hand it a
 brief, a fixed set of tools, and bounded authority, and it does one job.
 
