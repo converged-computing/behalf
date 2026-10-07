@@ -34,6 +34,14 @@ from ..core import AgentRunner, ConfirmFn, Task, ToolSpec
 _PY_TYPE = {str: str, int: int, float: float, bool: bool, list: list, dict: dict}
 
 
+async def _create_session(service, **kwargs):
+    """Create an ADK session; create_session is a coroutine in ADK >= 1.0 and sync before."""
+    session = service.create_session(**kwargs)
+    if inspect.isawaitable(session):
+        session = await session
+    return session
+
+
 def _to_adk_tool(ts: ToolSpec, confirm_fn: ConfirmFn) -> FunctionTool:
     """Wrap one ToolSpec as an ADK FunctionTool.
 
@@ -100,9 +108,8 @@ class ADKRunner(AgentRunner):
             name="behalf", model=self.model, instruction=instruction, tools=adk_tools
         )
         session_service = InMemorySessionService()
-        # TODO: confirm create_session is sync vs async in the installed ADK
-        session = session_service.create_session(
-            app_name=self.app_name, user_id="local", session_id="s1"
+        session = await _create_session(
+            session_service, app_name=self.app_name, user_id="local", session_id="s1"
         )
         runner = Runner(
             agent=agent, app_name=self.app_name, session_service=session_service
@@ -155,8 +162,8 @@ class ADKRunner(AgentRunner):
             tools=[finalize],
         )
         session_service = InMemorySessionService()
-        session = session_service.create_session(
-            app_name=self.app_name, user_id="local", session_id="setup"
+        session = await _create_session(
+            session_service, app_name=self.app_name, user_id="local", session_id="setup"
         )
         runner = Runner(
             agent=agent, app_name=self.app_name, session_service=session_service
