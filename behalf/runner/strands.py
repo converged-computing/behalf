@@ -5,11 +5,9 @@ Google key. Authenticates with your normal AWS credential chain (profile / env /
 role) and a region; the model is a Bedrock model id, which can still be Claude
 (a Bedrock Anthropic inference profile), just reached through Bedrock.
 
-STATUS: scaffolded, NOT yet run here (needs `pip install strands-agents` and AWS
-creds). Shape follows the documented Strands API; spots to confirm against the
-installed version are marked TODO. Strands tools are plain Python functions and
-it exposes tool calls, so our ToolSpec -> function conversion (with the
-read/action confirm gate) maps over directly.
+Strands tools are plain Python functions, so ToolSpecs convert directly (with
+the read/action confirm gate). Tested end to end with a scripted Model in place
+of Bedrock (tests/test_strands.py). Install with `pip install behalf[aws]`.
 """
 
 from __future__ import annotations
@@ -20,11 +18,16 @@ import json
 from typing import Any
 
 from strands import Agent
-from strands.models import (
-    BedrockModel,
-)  # TODO: confirm class name in the installed version
+from strands.models import BedrockModel
 
-from ..core import AgentRunner, ConfirmFn, Task, ToolSpec
+from ..core import (
+    AgentRunner,
+    ConfirmFn,
+    Task,
+    ToolSpec,
+    accept_manifest,
+    render_setup_prompt,
+)
 
 _PY_TYPE = {str: str, int: int, float: float, bool: bool, list: list, dict: dict}
 
@@ -79,7 +82,7 @@ def _to_strands_tool(ts: ToolSpec, confirm_fn: ConfirmFn, on_call=None):
     _invoke.__annotations__ = {
         n: _PY_TYPE.get(t, str) for n, t in ts.input_schema.items()
     }
-    return tool(_invoke)  # TODO: confirm strands.tool(func) call form
+    return tool(_invoke)
 
 
 class StrandsRunner(AgentRunner):
@@ -95,9 +98,7 @@ class StrandsRunner(AgentRunner):
     def _model(self):
         if self.model is None:
             return None
-        return BedrockModel(
-            model_id=self.model, region_name=self.region
-        )  # TODO: confirm kwargs
+        return BedrockModel(model_id=self.model, region_name=self.region)
 
     def _render(self, event) -> None:
         """Stream assistant text (dimmed). Tool lines print from the wrapper."""
@@ -140,9 +141,8 @@ class StrandsRunner(AgentRunner):
 
         stream = getattr(agent, "stream_async", None)
         if stream is None:
-            result = await asyncio.to_thread(
-                agent, user_prompt
-            )  # TODO: prefer invoke_async
+            # Older Strands without stream_async.
+            result = await asyncio.to_thread(agent, user_prompt)
             if self.verbose:
                 print(result)
         else:
@@ -150,7 +150,7 @@ class StrandsRunner(AgentRunner):
                 self._render(event)
             if self.verbose and self._mid_line:
                 print()  # newline after trailing streamed text
-        return None  # results collected via tool side effects (record_artifact -> sink)
+        return None  # results collected via tool side effects (e.g. a record_tool sink)
 
     async def converse(self, task: Task) -> dict:
         from strands import tool
@@ -159,11 +159,10 @@ class StrandsRunner(AgentRunner):
 
         def finalize_setup(manifest: dict) -> str:
             """Finalize the setup manifest (matching the task's schema) and end setup."""
-            captured["manifest"] = manifest
-            return "setup finalized"
+            return accept_manifest(task, manifest, captured)
 
         kwargs = {
-            "system_prompt": task.setup_system_prompt(),
+            "system_prompt": render_setup_prompt(task),
             "tools": [tool(finalize_setup)],
         }
         model = self._model()

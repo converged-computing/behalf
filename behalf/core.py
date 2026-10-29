@@ -86,7 +86,7 @@ class AgentRunner(Protocol):
     fake. This seam is what lets the whole flow be tested without a key."""
 
     async def converse(self, task: "Task") -> dict:
-        """Run the seeded setup conversation; return the manifest."""
+        """Run the setup conversation from render_setup_prompt(task); return the manifest."""
         ...
 
     async def run_agent(
@@ -98,6 +98,56 @@ class AgentRunner(Protocol):
     ) -> Any:
         """One agent run with a fixed toolset; action tools gate on confirm_fn."""
         ...
+
+
+def render_setup_prompt(task: "Task") -> str:
+    """Return the task's setup prompt with its manifest schema and finalize instruction appended."""
+    fields = "\n".join(
+        f"- {name}: {getattr(typ, '__name__', str(typ))}"
+        for name, typ in task.manifest_schema().items()
+    )
+    return (
+        f"{task.setup_system_prompt()}\n\n"
+        f"The manifest is a JSON object with these fields:\n{fields}\n\n"
+        "When every field is known, call finalize_setup with the manifest."
+    )
+
+
+def missing_manifest_fields(task: "Task", manifest: Any) -> list[str]:
+    """Return schema fields absent from the manifest (all fields if it is not a dict)."""
+    schema = task.manifest_schema()
+    if not isinstance(manifest, dict):
+        return list(schema)
+    return [name for name in schema if name not in manifest]
+
+
+def accept_manifest(task: "Task", manifest: Any, captured: dict) -> str:
+    """Store the manifest in captured if complete; return the message for the model."""
+    missing = missing_manifest_fields(task, manifest)
+    if missing:
+        return (
+            f"manifest is missing fields: {', '.join(missing)}. "
+            "Ask the user for them, then call finalize_setup again."
+        )
+    captured["manifest"] = manifest
+    return "setup finalized"
+
+
+def record_tool(
+    sink: list,
+    fields: dict,
+    name: str = "record_result",
+    description: str = "Record one result.",
+) -> ToolSpec:
+    """Return a tool that appends each call's arguments to sink."""
+
+    async def _record(args: dict) -> dict:
+        sink.append(dict(args))
+        return {
+            "content": [{"type": "text", "text": json.dumps({"recorded": len(sink)})}]
+        }
+
+    return ToolSpec(name, description, fields, _record, kind="action", confirm=False)
 
 
 @dataclass
@@ -122,10 +172,14 @@ async def run_task(
     approve_fn: Optional[Callable[[dict], bool]] = None,
 ) -> RunOutcome:
     """The one entrypoint every task flows through. manifest given -> skip the
-    conversation (reproducible/batch); None -> converse to produce it. Then
-    optional setup approval, then execute; action tools gate on confirm_fn."""
+    conversation (reproducible/batch); None -> converse to produce it. The
+    manifest must contain every manifest_schema() field. Then optional setup
+    approval, then execute; action tools gate on confirm_fn."""
     if manifest is None:
         manifest = await runner.converse(task)
+    missing = missing_manifest_fields(task, manifest)
+    if missing:
+        raise ValueError(f"{task.name}: manifest is missing fields: {missing}")
 
     approved = True
     if task.requires_setup_approval:
