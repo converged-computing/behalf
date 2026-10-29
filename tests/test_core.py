@@ -3,7 +3,20 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-from behalf import RunOutcome, Task, ToolSpec, run_task
+import json
+
+import pytest
+
+from behalf import (
+    RunOutcome,
+    Task,
+    ToolSpec,
+    accept_manifest,
+    missing_manifest_fields,
+    record_tool,
+    render_setup_prompt,
+    run_task,
+)
 
 
 class DemoTask(Task):
@@ -99,6 +112,69 @@ def test_setup_approval_can_abort():
     )
     assert outcome.approved is False and outcome.result is None
     print("OK setup approval can abort before execution")
+
+
+class SchemaTask(DemoTask):
+    name = "schema"
+
+    def manifest_schema(self):
+        return {"goal": str, "sites": list, "budget": float}
+
+    def setup_system_prompt(self):
+        return "Plan an experiment."
+
+
+def test_setup_prompt_carries_schema():
+    prompt = render_setup_prompt(SchemaTask())
+    assert prompt.startswith("Plan an experiment.")
+    for line in ("- goal: str", "- sites: list", "- budget: float", "finalize_setup"):
+        assert line in prompt
+
+
+def test_missing_manifest_fields():
+    task = SchemaTask()
+    assert missing_manifest_fields(task, {"goal": "g"}) == ["sites", "budget"]
+    assert missing_manifest_fields(task, {"goal": 1, "sites": [], "budget": 0}) == []
+    assert missing_manifest_fields(task, "not a dict") == ["goal", "sites", "budget"]
+
+
+def test_accept_manifest_only_captures_complete_manifests():
+    task, captured = SchemaTask(), {}
+    message = accept_manifest(task, {"goal": "g"}, captured)
+    assert "sites, budget" in message and captured == {}
+    full = {"goal": "g", "sites": ["a"], "budget": 1.0}
+    assert accept_manifest(task, full, captured) == "setup finalized"
+    assert captured == {"manifest": full}
+
+
+def test_run_task_rejects_incomplete_manifest():
+    task = SchemaTask()
+    with pytest.raises(ValueError, match="sites"):
+        asyncio.run(
+            run_task(
+                task,
+                FakeRunner({}),
+                manifest={"goal": "g"},
+                confirm_fn=lambda n, a: True,
+            )
+        )
+    assert not hasattr(task, "acted"), "execute must not run"
+
+
+def test_run_task_rejects_incomplete_conversed_manifest():
+    with pytest.raises(ValueError, match="goal"):
+        asyncio.run(run_task(DemoTask(), FakeRunner({}), confirm_fn=lambda n, a: True))
+
+
+def test_record_tool_appends_to_sink():
+    sink = []
+    spec = record_tool(sink, {"job": str, "site": str}, name="record_placement")
+    assert (spec.name, spec.kind, spec.confirm) == ("record_placement", "action", False)
+    assert spec.input_schema == {"job": str, "site": str}
+    out = asyncio.run(spec.handler({"job": "j1", "site": "a"}))
+    asyncio.run(spec.handler({"job": "j2", "site": "b"}))
+    assert json.loads(out["content"][0]["text"]) == {"recorded": 1}
+    assert sink == [{"job": "j1", "site": "a"}, {"job": "j2", "site": "b"}]
 
 
 if __name__ == "__main__":

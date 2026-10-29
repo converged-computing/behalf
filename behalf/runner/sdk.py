@@ -22,7 +22,14 @@ from claude_agent_sdk import (
     tool,
 )
 
-from ..core import AgentRunner, ConfirmFn, Task, ToolSpec
+from ..core import (
+    AgentRunner,
+    ConfirmFn,
+    Task,
+    ToolSpec,
+    accept_manifest,
+    render_setup_prompt,
+)
 
 
 def _say(text: str) -> dict:
@@ -41,6 +48,20 @@ def _to_sdk_tool(spec: ToolSpec, confirm_fn: ConfirmFn):
         return await spec.handler(args)
 
     return _sdk_tool
+
+
+def _finalize_tool(task: Task, captured: dict):
+    """SDK tool that stores a complete manifest in captured, or reports missing fields."""
+
+    @tool(
+        "finalize_setup",
+        "Finalize the setup manifest (matching the task's schema) and end setup.",
+        {"manifest": dict},
+    )
+    async def finalize(args):
+        return _say(accept_manifest(task, args.get("manifest", args), captured))
+
+    return finalize
 
 
 class SDKRunner(AgentRunner):
@@ -83,25 +104,16 @@ class SDKRunner(AgentRunner):
 
         async for message in query(prompt=user_prompt, options=options):
             self._echo(message)
-        # Results are collected through the tools' side effects (e.g.
-        # record_artifact writing into the task's sink), not the return value.
+        # Results are collected through tool side effects (e.g. a record_tool
+        # sink), not the return value.
         return None
 
     async def converse(self, task: Task) -> dict:
         captured: dict = {}
-
-        @tool(
-            "finalize_setup",
-            "Finalize the setup manifest (matching the task's schema) and end setup.",
-            {"manifest": dict},
-        )
-        async def finalize(args):
-            captured["manifest"] = args.get("manifest", args)
-            return _say("setup finalized")
-
+        finalize = _finalize_tool(task, captured)
         server = create_sdk_mcp_server(name="setup", version="0.1.0", tools=[finalize])
         options = self._options(
-            "setup", server, ["mcp__setup__finalize_setup"], task.setup_system_prompt()
+            "setup", server, ["mcp__setup__finalize_setup"], render_setup_prompt(task)
         )
 
         # The model asks the user for what it needs and drives the structure; we

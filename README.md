@@ -17,6 +17,26 @@ from behalf import run_task, make_runner
 outcome = await run_task(MyTask(), make_runner("aws"))
 ```
 
+### Manifests
+
+`manifest_schema()` is sent to the model during setup (see `render_setup_prompt`),
+and `finalize_setup` only accepts a manifest that has every schema field. `run_task`
+raises `ValueError` if a manifest, conversed or passed in, is missing a field.
+
+### Results
+
+Runners return `None` from `run_agent`; results come from tool side effects.
+`record_tool(sink, fields)` returns a tool that appends each call's arguments to `sink`:
+
+```python
+from behalf import record_tool
+
+class MyTask(Task):
+    def build_tools(self, manifest):
+        self.results = []
+        return [record_tool(self.results, {"job": str, "site": str})]
+```
+
 
 ## Install
 

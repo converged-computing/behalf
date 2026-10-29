@@ -11,7 +11,11 @@ from .core import (
     RunOutcome,
     Task,
     ToolSpec,
+    accept_manifest,
     default_confirm,
+    missing_manifest_fields,
+    record_tool,
+    render_setup_prompt,
     run_task,
 )
 
@@ -21,7 +25,11 @@ __all__ = [
     "RunOutcome",
     "Task",
     "ToolSpec",
+    "accept_manifest",
     "default_confirm",
+    "missing_manifest_fields",
+    "record_tool",
+    "render_setup_prompt",
     "run_task",
     "make_runner",
 ]

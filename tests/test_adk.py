@@ -260,5 +260,113 @@ def test_make_runner_gemini():
     assert make_runner("gemini").model == "gemini-2.5-flash"
 
 
+# Real ADK Runner with a scripted BaseLlm in place of Gemini: exercises ADK's
+# own tool dispatch, session handling, and multi-turn reuse without a key.
+
+from google.adk.models.base_llm import BaseLlm  # noqa: E402
+from google.adk.models.llm_response import LlmResponse  # noqa: E402
+from google.genai import types as genai_types  # noqa: E402
+
+from behalf import Task  # noqa: E402
+
+
+class ScriptedLlm(BaseLlm):
+    """Replies with the next scripted step: a (tool, args) call or plain text."""
+
+    script: list = []
+    requests: list = []
+
+    async def generate_content_async(self, llm_request, stream=False):
+        self.requests.append(llm_request)
+        step = self.script.pop(0)
+        if isinstance(step, tuple):
+            name, args = step
+            part = genai_types.Part(
+                function_call=genai_types.FunctionCall(name=name, args=args)
+            )
+        else:
+            part = genai_types.Part(text=step)
+        yield LlmResponse(content=genai_types.Content(role="model", parts=[part]))
+
+
+def _function_responses(request):
+    return [
+        p.function_response.response
+        for c in request.contents
+        for p in c.parts or []
+        if p.function_response
+    ]
+
+
+def test_run_agent_with_real_adk_runner():
+    log = []
+
+    async def look(args):
+        log.append(("look", args))
+        return _text({"saw": args["q"]})
+
+    async def act(args):
+        log.append(("act", args))
+        return _text("acted")
+
+    tools = [
+        ToolSpec("look", "look", {"q": str}, look),
+        ToolSpec("act", "act", {"n": int}, act, kind="action", confirm=True),
+    ]
+    llm = ScriptedLlm(
+        model="scripted", script=[("look", {"q": "hi"}), ("act", {"n": 3}), "done"]
+    )
+    denied = []
+
+    def deny(name, args):
+        denied.append((name, args))
+        return False
+
+    runner = ADKRunner(model=llm, verbose=False)
+    assert asyncio.run(runner.run_agent("system", "go", tools, deny)) is None
+    assert log == [("look", {"q": "hi"})]
+    assert denied == [("act", {"n": 3})]
+    responses = _function_responses(llm.requests[-1])
+    assert {"saw": "hi"} in responses
+    assert any("cancelled by user" in json.dumps(r) for r in responses)
+
+
+class SetupTask(Task):
+    name = "setup"
+
+    def manifest_schema(self):
+        return {"goal": str, "sites": list}
+
+    def setup_system_prompt(self):
+        return "Plan it."
+
+    def execute_system_prompt(self, manifest):
+        return "run"
+
+
+def test_converse_with_real_adk_runner_reuses_session(monkeypatch):
+    llm = ScriptedLlm(
+        model="scripted",
+        script=[
+            "Which sites?",
+            ("finalize_setup", {"manifest": {"goal": "g"}}),
+            ("finalize_setup", {"manifest": {"goal": "g", "sites": ["a"]}}),
+            "ok",
+        ],
+    )
+    replies = iter(["site a"])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(replies))
+    manifest = asyncio.run(ADKRunner(model=llm, verbose=False).converse(SetupTask()))
+    assert manifest == {"goal": "g", "sites": ["a"]}
+
+    first, *_, last = llm.requests
+    assert "- sites: list" in first.config.system_instruction
+    texts = [p.text for c in last.contents for p in c.parts or [] if p.text]
+    assert "Which sites?" in texts and "site a" in texts, "second turn must see first"
+    assert any(
+        "missing fields: sites" in json.dumps(r) for r in _function_responses(last)
+    )
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))
